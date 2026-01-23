@@ -1,0 +1,12 @@
+[
+  {
+    "id": 1768915680662,
+    "nombre": "Factura enero",
+    "fecha_hora": "2026-01-20 13:28:00",
+    "pdf_name": "11_2025.PDF",
+    "excel_name": "Documento de Control_ADA_JA 20250819_Tandas ADA 01-09-25.xlsx",
+    "dispositivos": 58,
+    "coste_total_sin_iva": 4407.474399999999,
+    "coste_total_con_iva": 5333.044024
+  }
+]
