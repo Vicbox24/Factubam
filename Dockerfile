@@ -6,4 +6,4 @@ COPY . /app
 
 RUN pip install --no-cache-dir streamlit pandas openpyxl plotly pdfplumber
 
-CMD ["python", "-m", "streamlit", "run", "factubam.py", "--server.address=0.0.0.0", "--server.port=8501"]
+CMD ["python", "-m", "streamlit", "run", "factubam.py", "--server.address=0.0.0.0", "--server.port=8502"]
