@@ -30,13 +30,15 @@ st.set_page_config(
     page_icon="Imagenes/ada-logo.png",
     layout="wide"
 )
+
+# Bloque try-except para la imagen por si no existe
 try:
     st.image(
         "Imagenes/cabecera_andalucia.jpg",
         use_container_width=True
     )
 except:
-    pass # Evitar error si no existe la imagen
+    pass
 
 st.markdown("<br><br>", unsafe_allow_html=True)
 
@@ -111,12 +113,17 @@ def cargar_historial():
             try:
                 # Cargar DataFrame
                 df_file = DOCUMENTOS_DIR / f"{reg_data['id']}_data.json"
+                
+                # CORRECCIÓN: Solo procesamos si existe el archivo de datos principal
                 if df_file.exists():
                     with open(df_file, 'r', encoding='utf-8') as f:
                         df_data = json.load(f)
                         reg_data['df'] = pd.DataFrame(df_data)
+                else:
+                    # Si no hay datos, saltamos este registro corrupto
+                    continue 
                 
-                # Cargar archivos PDF y Excel
+                # Cargar archivos PDF y Excel (opcional, si existen)
                 pdf_file = DOCUMENTOS_DIR / f"{reg_data['id']}_factura.pdf"
                 excel_file = DOCUMENTOS_DIR / f"{reg_data['id']}_inventario.xlsx"
                 
@@ -128,9 +135,12 @@ def cargar_historial():
                     with open(excel_file, 'rb') as f:
                         reg_data['excel_bytes'] = f.read()
                 
-                historial.append(reg_data)
+                # Solo añadimos al historial si tiene el DataFrame cargado correctamente
+                if 'df' in reg_data:
+                    historial.append(reg_data)
+                    
             except Exception as e:
-                st.warning(f"Error al cargar registro {reg_data.get('id', 'desconocido')}: {str(e)}")
+                st.warning(f"Registro corrupto omitido ID {reg_data.get('id', 'desconocido')}: {str(e)}")
                 continue
         
         return historial
@@ -145,6 +155,10 @@ def guardar_historial(historial):
         historial_simple = []
         
         for registro in historial:
+            # Protección extra: asegurar que existe el df antes de guardar
+            if 'df' not in registro:
+                continue
+
             reg_simple = {
                 'id': registro['id'],
                 'nombre': registro['nombre'],
@@ -285,6 +299,8 @@ def cruzar_excel(xlsx_file, datos_pdf):
             # Limpieza básica del SN del Excel para asegurar coincidencia
             if sn:
                 sn = str(sn).strip()
+            else:
+                continue # Si no hay SN en el excel, saltamos la fila
 
             if sn in datos_pdf:
                 # Marcamos este SN como encontrado
@@ -323,9 +339,8 @@ def cruzar_excel(xlsx_file, datos_pdf):
                     "estado": "Revisado"
                 })
     
-    # === CORRECCIÓN DEL DESCUADRE ===
+    # === CORRECCIÓN DEL DESCUADRE (MANTENIDA) ===
     # Buscar qué S/N existen en el PDF pero NO se encontraron en el Excel
-    # Estos son los que provocan la diferencia de precio.
     for sn_pdf, valores in datos_pdf.items():
         if sn_pdf not in sns_encontrados_en_excel:
             # Calcular costes de la máquina "huérfana"
@@ -426,17 +441,28 @@ def obtener_dataframe_acumulado(ids_seleccionados=None):
     
     dfs = []
     for registro in registros:
+        # CORRECCIÓN: Comprobamos que el DataFrame exista antes de usarlo
+        if 'df' not in registro or registro['df'] is None:
+            continue
+            
         df_temp = registro['df'].copy()
         df_temp['documento'] = registro['nombre']
         df_temp['fecha'] = registro['fecha_hora']
         dfs.append(df_temp)
     
+    if not dfs:
+        return None
+        
     df_acumulado = pd.concat(dfs, ignore_index=True)
     return df_acumulado
 
 def mostrar_analisis(df, titulo="Análisis", mostrar_por_documento=False):
     """Muestra todas las gráficas y tablas del análisis"""
     
+    if df is None or df.empty:
+        st.warning("No hay datos para mostrar.")
+        return
+
     st.subheader(titulo)
     
     # Métricas generales
@@ -449,11 +475,16 @@ def mostrar_analisis(df, titulo="Análisis", mostrar_por_documento=False):
         col1.metric("🖥️ Dispositivos", len(df))
     
     # Calcular dispositivos faltantes (los que añadimos nosotros)
-    sin_ubicar = len(df[df['estado'] == "⚠️ Faltante en Excel"])
+    # Usamos try/except por si la columna estado no existe en versiones antiguas de los datos
+    try:
+        sin_ubicar = len(df[df['estado'] == "⚠️ Faltante en Excel"])
+    except:
+        sin_ubicar = 0
+
     revisados = len(df) - sin_ubicar
 
     col2.metric("✅ Revisados", revisados)
-    col3.metric("❌ Sin ubicar (Solo PDF)", sin_ubicar) # Actualizado para mostrar el error
+    col3.metric("❌ Sin ubicar (Solo PDF)", sin_ubicar)
     col4.metric("🖨️ Total B/N", f"{df['bn'].sum():,}")
     col5.metric("🎨 Total Color", f"{df['color'].sum():,}")
     
@@ -755,7 +786,10 @@ def mostrar_detalle_equipos(df):
     }
     
     def highlight_missing(row):
-        return ['background-color: #ffcccc' if row['Estado'] == '⚠️ Faltante en Excel' else '' for _ in row]
+        # Protección extra por si falta la columna 'Estado'
+        if 'Estado' in row and row['Estado'] == '⚠️ Faltante en Excel':
+            return ['background-color: #ffcccc'] * len(row)
+        return [''] * len(row)
 
     st.dataframe(
         df_display[columnas_mostrar].rename(columns=columnas_renombrar).style.apply(highlight_missing, axis=1),
@@ -804,6 +838,10 @@ st.markdown("---")
 if st.session_state.historial_documentos and st.session_state.modo_vista != 'nuevo':
     with st.expander("📚 Gestión de Documentos Guardados", expanded=False):
         for registro in st.session_state.historial_documentos:
+            # Si el registro no tiene datos, no lo mostramos para evitar errores
+            if 'df' not in registro:
+                continue
+
             col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 1, 1])
             
             with col1:
@@ -871,34 +909,43 @@ elif st.session_state.modo_vista == 'individual':
     st.subheader("📄 Ver Documento Individual")
     
     if st.session_state.historial_documentos:
-        nombres_docs = [f"{reg['nombre']} ({reg['fecha_hora']})" for reg in st.session_state.historial_documentos]
-        doc_seleccionado_idx = st.selectbox(
-            "Selecciona un documento:",
-            range(len(st.session_state.historial_documentos)),
-            format_func=lambda x: nombres_docs[x]
-        )
+        # Filtramos para mostrar solo registros válidos
+        registros_validos = [r for r in st.session_state.historial_documentos if 'df' in r]
         
-        registro = st.session_state.historial_documentos[doc_seleccionado_idx]
-        st.session_state.registro_seleccionado = registro['id']
-        
-        mostrar_analisis(registro['df'], titulo=f"📊 Análisis: {registro['nombre']}")
+        if registros_validos:
+            nombres_docs = [f"{reg['nombre']} ({reg['fecha_hora']})" for reg in registros_validos]
+            doc_seleccionado_idx = st.selectbox(
+                "Selecciona un documento:",
+                range(len(registros_validos)),
+                format_func=lambda x: nombres_docs[x]
+            )
+            
+            registro = registros_validos[doc_seleccionado_idx]
+            st.session_state.registro_seleccionado = registro['id']
+            
+            mostrar_analisis(registro['df'], titulo=f"📊 Análisis: {registro['nombre']}")
+        else:
+             st.info("No hay documentos válidos guardados. Carga uno nuevo.")
     else:
         st.info("No hay documentos guardados. Carga uno nuevo desde el menú 'Nuevo Análisis'.")
 
 elif st.session_state.modo_vista == 'acumulado':
     st.subheader("📊 Vista Acumulada - Todos los Documentos")
     
-    st.info(f"📁 Mostrando datos acumulados de {len(st.session_state.historial_documentos)} documento(s)")
+    # Filtrar solo válidos
+    registros_validos = [r for r in st.session_state.historial_documentos if 'df' in r]
+    
+    st.info(f"📁 Mostrando datos acumulados de {len(registros_validos)} documento(s)")
     
     # Selector de documentos a incluir
     with st.expander("⚙️ Configurar documentos a incluir", expanded=False):
         st.markdown("**Selecciona qué documentos incluir en el análisis acumulado:**")
         
         if st.checkbox("Seleccionar todos", value=True):
-            ids_seleccionados = [reg['id'] for reg in st.session_state.historial_documentos]
+            ids_seleccionados = [reg['id'] for reg in registros_validos]
         else:
             ids_seleccionados = []
-            for registro in st.session_state.historial_documentos:
+            for registro in registros_validos:
                 if st.checkbox(f"{registro['nombre']} ({registro['fecha_hora']})", 
                                value=False, 
                                key=f"check_acum_{registro['id']}"):
@@ -919,151 +966,156 @@ elif st.session_state.modo_vista == 'comparativa':
     
     st.markdown("**Selecciona los documentos que deseas comparar:**")
     
-    col_select1, col_select2 = st.columns(2)
-    
-    with col_select1:
-        st.markdown("#### 📄 Documento 1")
-        nombres_docs = [f"{reg['nombre']}" for reg in st.session_state.historial_documentos]
-        doc1_idx = st.selectbox(
-            "Selecciona el primer documento:",
-            range(len(st.session_state.historial_documentos)),
-            format_func=lambda x: nombres_docs[x],
-            key="comp_doc1"
-        )
-    
-    with col_select2:
-        st.markdown("#### 📄 Documento 2")
-        doc2_idx = st.selectbox(
-            "Selecciona el segundo documento:",
-            range(len(st.session_state.historial_documentos)),
-            format_func=lambda x: nombres_docs[x],
-            key="comp_doc2"
-        )
-    
-    if doc1_idx != doc2_idx:
-        reg1 = st.session_state.historial_documentos[doc1_idx]
-        reg2 = st.session_state.historial_documentos[doc2_idx]
-        
-        st.markdown("---")
-        st.markdown("### 📊 Comparativa de Métricas")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric(
-                "Dispositivos",
-                reg2['dispositivos'],
-                delta=reg2['dispositivos'] - reg1['dispositivos'],
-                delta_color="normal"
-            )
-        
-        with col2:
-            total_imp1 = reg1['df']['bn'].sum() + reg1['df']['color'].sum()
-            total_imp2 = reg2['df']['bn'].sum() + reg2['df']['color'].sum()
-            st.metric(
-                "Total Impresiones",
-                f"{total_imp2:,}",
-                delta=total_imp2 - total_imp1,
-                delta_color="normal"
-            )
-        
-        with col3:
-            st.metric(
-                "Coste sin IVA",
-                f"{reg2['coste_total_sin_iva']:.2f} €",
-                delta=f"{reg2['coste_total_sin_iva'] - reg1['coste_total_sin_iva']:.2f} €",
-                delta_color="inverse"
-            )
-        
-        with col4:
-            st.metric(
-                "Coste con IVA",
-                f"{reg2['coste_total_con_iva']:.2f} €",
-                delta=f"{reg2['coste_total_con_iva'] - reg1['coste_total_con_iva']:.2f} €",
-                delta_color="inverse"
-            )
-        
-        st.markdown("---")
-        
-        # Gráfico comparativo de costes
-        df_comparacion = pd.DataFrame({
-            'Documento': [reg1['nombre'], reg2['nombre']],
-            'Sin IVA': [reg1['coste_total_sin_iva'], reg2['coste_total_sin_iva']],
-            'Con IVA': [reg1['coste_total_con_iva'], reg2['coste_total_con_iva']]
-        })
-        
-        fig_comp_costes = go.Figure()
-        fig_comp_costes.add_trace(go.Bar(
-            name='Sin IVA',
-            x=df_comparacion['Documento'],
-            y=df_comparacion['Sin IVA'],
-            marker_color='lightcoral'
-        ))
-        fig_comp_costes.add_trace(go.Bar(
-            name='Con IVA',
-            x=df_comparacion['Documento'],
-            y=df_comparacion['Con IVA'],
-            marker_color='darkred'
-        ))
-        fig_comp_costes.update_layout(
-            title='Comparación de Costes',
-            barmode='group',
-            height=400
-        )
-        st.plotly_chart(fig_comp_costes, use_container_width=True, key="comp_costes_docs")
-        
-        # Comparación de impresiones
-        col_imp1, col_imp2 = st.columns(2)
-        
-        with col_imp1:
-            st.markdown(f"#### {reg1['nombre']}")
-            fig1 = px.pie(
-                values=[reg1['df']['bn'].sum(), reg1['df']['color'].sum()],
-                names=['B/N', 'Color'],
-                title='Distribución de Impresiones',
-                hole=0.4
-            )
-            st.plotly_chart(fig1, use_container_width=True, key="comp_pie1")
-        
-        with col_imp2:
-            st.markdown(f"#### {reg2['nombre']}")
-            fig2 = px.pie(
-                values=[reg2['df']['bn'].sum(), reg2['df']['color'].sum()],
-                names=['B/N', 'Color'],
-                title='Distribución de Impresiones',
-                hole=0.4
-            )
-            st.plotly_chart(fig2, use_container_width=True, key="comp_pie2")
-        
-        # Análisis por departamento comparativo
-        st.markdown("---")
-        st.markdown("### 🏢 Comparación por Departamentos")
-        
-        df1_dept = reg1['df'].groupby('organismo').agg({
-            'coste_con_iva': 'sum'
-        }).reset_index()
-        df1_dept['documento'] = reg1['nombre']
-        
-        df2_dept = reg2['df'].groupby('organismo').agg({
-            'coste_con_iva': 'sum'
-        }).reset_index()
-        df2_dept['documento'] = reg2['nombre']
-        
-        df_dept_comp = pd.concat([df1_dept, df2_dept])
-        
-        fig_dept = px.bar(
-            df_dept_comp,
-            x='organismo',
-            y='coste_con_iva',
-            color='documento',
-            barmode='group',
-            title='Coste por Departamento (con IVA)',
-            labels={'coste_con_iva': 'Coste (€)', 'organismo': 'Departamento'}
-        )
-        st.plotly_chart(fig_dept, use_container_width=True, key="comp_dept_costes")
-        
+    registros_validos = [r for r in st.session_state.historial_documentos if 'df' in r]
+
+    if len(registros_validos) < 2:
+        st.warning("Necesitas al menos 2 documentos válidos para comparar.")
     else:
-        st.warning("⚠️ Por favor, selecciona dos documentos diferentes para comparar")
+        col_select1, col_select2 = st.columns(2)
+        
+        with col_select1:
+            st.markdown("#### 📄 Documento 1")
+            nombres_docs = [f"{reg['nombre']}" for reg in registros_validos]
+            doc1_idx = st.selectbox(
+                "Selecciona el primer documento:",
+                range(len(registros_validos)),
+                format_func=lambda x: nombres_docs[x],
+                key="comp_doc1"
+            )
+        
+        with col_select2:
+            st.markdown("#### 📄 Documento 2")
+            doc2_idx = st.selectbox(
+                "Selecciona el segundo documento:",
+                range(len(registros_validos)),
+                format_func=lambda x: nombres_docs[x],
+                key="comp_doc2"
+            )
+        
+        if doc1_idx != doc2_idx:
+            reg1 = registros_validos[doc1_idx]
+            reg2 = registros_validos[doc2_idx]
+            
+            st.markdown("---")
+            st.markdown("### 📊 Comparativa de Métricas")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric(
+                    "Dispositivos",
+                    reg2['dispositivos'],
+                    delta=reg2['dispositivos'] - reg1['dispositivos'],
+                    delta_color="normal"
+                )
+            
+            with col2:
+                total_imp1 = reg1['df']['bn'].sum() + reg1['df']['color'].sum()
+                total_imp2 = reg2['df']['bn'].sum() + reg2['df']['color'].sum()
+                st.metric(
+                    "Total Impresiones",
+                    f"{total_imp2:,}",
+                    delta=total_imp2 - total_imp1,
+                    delta_color="normal"
+                )
+            
+            with col3:
+                st.metric(
+                    "Coste sin IVA",
+                    f"{reg2['coste_total_sin_iva']:.2f} €",
+                    delta=f"{reg2['coste_total_sin_iva'] - reg1['coste_total_sin_iva']:.2f} €",
+                    delta_color="inverse"
+                )
+            
+            with col4:
+                st.metric(
+                    "Coste con IVA",
+                    f"{reg2['coste_total_con_iva']:.2f} €",
+                    delta=f"{reg2['coste_total_con_iva'] - reg1['coste_total_con_iva']:.2f} €",
+                    delta_color="inverse"
+                )
+            
+            st.markdown("---")
+            
+            # Gráfico comparativo de costes
+            df_comparacion = pd.DataFrame({
+                'Documento': [reg1['nombre'], reg2['nombre']],
+                'Sin IVA': [reg1['coste_total_sin_iva'], reg2['coste_total_sin_iva']],
+                'Con IVA': [reg1['coste_total_con_iva'], reg2['coste_total_con_iva']]
+            })
+            
+            fig_comp_costes = go.Figure()
+            fig_comp_costes.add_trace(go.Bar(
+                name='Sin IVA',
+                x=df_comparacion['Documento'],
+                y=df_comparacion['Sin IVA'],
+                marker_color='lightcoral'
+            ))
+            fig_comp_costes.add_trace(go.Bar(
+                name='Con IVA',
+                x=df_comparacion['Documento'],
+                y=df_comparacion['Con IVA'],
+                marker_color='darkred'
+            ))
+            fig_comp_costes.update_layout(
+                title='Comparación de Costes',
+                barmode='group',
+                height=400
+            )
+            st.plotly_chart(fig_comp_costes, use_container_width=True, key="comp_costes_docs")
+            
+            # Comparación de impresiones
+            col_imp1, col_imp2 = st.columns(2)
+            
+            with col_imp1:
+                st.markdown(f"#### {reg1['nombre']}")
+                fig1 = px.pie(
+                    values=[reg1['df']['bn'].sum(), reg1['df']['color'].sum()],
+                    names=['B/N', 'Color'],
+                    title='Distribución de Impresiones',
+                    hole=0.4
+                )
+                st.plotly_chart(fig1, use_container_width=True, key="comp_pie1")
+            
+            with col_imp2:
+                st.markdown(f"#### {reg2['nombre']}")
+                fig2 = px.pie(
+                    values=[reg2['df']['bn'].sum(), reg2['df']['color'].sum()],
+                    names=['B/N', 'Color'],
+                    title='Distribución de Impresiones',
+                    hole=0.4
+                )
+                st.plotly_chart(fig2, use_container_width=True, key="comp_pie2")
+            
+            # Análisis por departamento comparativo
+            st.markdown("---")
+            st.markdown("### 🏢 Comparación por Departamentos")
+            
+            df1_dept = reg1['df'].groupby('organismo').agg({
+                'coste_con_iva': 'sum'
+            }).reset_index()
+            df1_dept['documento'] = reg1['nombre']
+            
+            df2_dept = reg2['df'].groupby('organismo').agg({
+                'coste_con_iva': 'sum'
+            }).reset_index()
+            df2_dept['documento'] = reg2['nombre']
+            
+            df_dept_comp = pd.concat([df1_dept, df2_dept])
+            
+            fig_dept = px.bar(
+                df_dept_comp,
+                x='organismo',
+                y='coste_con_iva',
+                color='documento',
+                barmode='group',
+                title='Coste por Departamento (con IVA)',
+                labels={'coste_con_iva': 'Coste (€)', 'organismo': 'Departamento'}
+            )
+            st.plotly_chart(fig_dept, use_container_width=True, key="comp_dept_costes")
+            
+        else:
+            st.warning("⚠️ Por favor, selecciona dos documentos diferentes para comparar")
 
 # ======================================================
 # UTILIDADES MD5 – DETECCIÓN DE ARCHIVOS DUPLICADOS
