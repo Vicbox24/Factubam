@@ -98,6 +98,16 @@ details summary {
 </style>
 """, unsafe_allow_html=True)
 
+# --- FUNCIÓN DE REDONDEO EXACTO (TIPO EXCEL) ---
+def redondear_euro(valor):
+    """
+    Redondea un valor a 2 decimales usando redondeo aritmético (0.5 sube).
+    Esto corrige las discrepancias de céntimos con Excel/PDF.
+    """
+    if valor is None:
+        return 0.0
+    return int(valor * 100 + 0.5) / 100.0
+
 # Funciones de almacenamiento persistente en disco
 def cargar_historial():
     """Carga el historial desde archivo JSON local"""
@@ -114,16 +124,16 @@ def cargar_historial():
                 # Cargar DataFrame
                 df_file = DOCUMENTOS_DIR / f"{reg_data['id']}_data.json"
                 
-                # CORRECCIÓN: Solo procesamos si existe el archivo de datos principal
+                # CORRECCIÓN: Verificación robusta de existencia
                 if df_file.exists():
                     with open(df_file, 'r', encoding='utf-8') as f:
                         df_data = json.load(f)
                         reg_data['df'] = pd.DataFrame(df_data)
                 else:
-                    # Si no hay datos, saltamos este registro corrupto
-                    continue 
+                    # Si no hay datos, saltamos este registro
+                    continue
                 
-                # Cargar archivos PDF y Excel (opcional, si existen)
+                # Cargar archivos PDF y Excel
                 pdf_file = DOCUMENTOS_DIR / f"{reg_data['id']}_factura.pdf"
                 excel_file = DOCUMENTOS_DIR / f"{reg_data['id']}_inventario.xlsx"
                 
@@ -135,12 +145,12 @@ def cargar_historial():
                     with open(excel_file, 'rb') as f:
                         reg_data['excel_bytes'] = f.read()
                 
-                # Solo añadimos al historial si tiene el DataFrame cargado correctamente
-                if 'df' in reg_data:
+                # Solo añadimos si el DataFrame es válido
+                if 'df' in reg_data and isinstance(reg_data['df'], pd.DataFrame):
                     historial.append(reg_data)
                     
             except Exception as e:
-                st.warning(f"Registro corrupto omitido ID {reg_data.get('id', 'desconocido')}: {str(e)}")
+                st.warning(f"Error cargando registro {reg_data.get('id', 'desconocido')}: {str(e)}")
                 continue
         
         return historial
@@ -155,8 +165,8 @@ def guardar_historial(historial):
         historial_simple = []
         
         for registro in historial:
-            # Protección extra: asegurar que existe el df antes de guardar
-            if 'df' not in registro:
+            # Protección: si no hay df válido, no guardar metadatos huérfanos
+            if 'df' not in registro or not isinstance(registro['df'], pd.DataFrame):
                 continue
 
             reg_simple = {
@@ -281,8 +291,7 @@ def cruzar_excel(xlsx_file, datos_pdf):
     wb = openpyxl.load_workbook(xlsx_file)
     resultados = []
     
-    # IMPORTANTE: Creamos un conjunto para rastrear qué números de serie del PDF 
-    # encontramos en el Excel. Así sabremos cuáles faltan.
+    # Conjunto para rastrear SNs encontrados en el Excel
     sns_encontrados_en_excel = set()
 
     for sheet_name in wb.sheetnames:
@@ -296,30 +305,39 @@ def cruzar_excel(xlsx_file, datos_pdf):
         for row in range(2, sheet.max_row + 1):
             sn = sheet.cell(row, idx_sn).value
             
-            # Limpieza básica del SN del Excel para asegurar coincidencia
             if sn:
                 sn = str(sn).strip()
             else:
-                continue # Si no hay SN en el excel, saltamos la fila
+                continue
 
             if sn in datos_pdf:
-                # Marcamos este SN como encontrado
                 sns_encontrados_en_excel.add(sn)
 
                 bn = datos_pdf[sn]["bn"]
                 color = datos_pdf[sn]["color"]
                 
-                coste_bn_sin_iva = bn * PRECIO_BN
-                coste_color_sin_iva = color * PRECIO_COLOR
+                # --- CÁLCULOS CON REDONDEO ---
+                # 1. Calcular coste bruto por tipo
+                # 2. Redondear a 2 decimales (como en factura línea a línea)
+                coste_bn_sin_iva = redondear_euro(bn * PRECIO_BN)
+                coste_color_sin_iva = redondear_euro(color * PRECIO_COLOR)
+                
+                # 3. Sumar bases (ya redondeadas)
                 coste_sin_iva = coste_bn_sin_iva + coste_color_sin_iva
                 
-                iva_bn = coste_bn_sin_iva * IVA
-                iva_color = coste_color_sin_iva * IVA
-                iva_total = iva_bn + iva_color
+                # 4. Calcular IVA sobre la base total
+                iva_total = redondear_euro(coste_sin_iva * IVA)
                 
+                # Para mostrar desglose de IVA (informativo, pero el total manda)
+                iva_bn = redondear_euro(coste_bn_sin_iva * IVA)
+                iva_color = redondear_euro(coste_color_sin_iva * IVA)
+                
+                # 5. Calcular total final
+                coste_con_iva = redondear_euro(coste_sin_iva + iva_total)
+                
+                # Campos auxiliares
                 coste_bn_con_iva = coste_bn_sin_iva + iva_bn
                 coste_color_con_iva = coste_color_sin_iva + iva_color
-                coste_con_iva = coste_sin_iva + iva_total
                 
                 resultados.append({
                     "sn": sn,
@@ -339,27 +357,27 @@ def cruzar_excel(xlsx_file, datos_pdf):
                     "estado": "Revisado"
                 })
     
-    # === CORRECCIÓN DEL DESCUADRE (MANTENIDA) ===
-    # Buscar qué S/N existen en el PDF pero NO se encontraron en el Excel
+    # === RECUPERACIÓN DE DISPOSITIVOS NO ENCONTRADOS EN EXCEL ===
     for sn_pdf, valores in datos_pdf.items():
         if sn_pdf not in sns_encontrados_en_excel:
-            # Calcular costes de la máquina "huérfana"
             bn = valores["bn"]
             color = valores["color"]
             
-            coste_bn_sin_iva = bn * PRECIO_BN
-            coste_color_sin_iva = color * PRECIO_COLOR
+            # --- MISMOS CÁLCULOS CON REDONDEO ---
+            coste_bn_sin_iva = redondear_euro(bn * PRECIO_BN)
+            coste_color_sin_iva = redondear_euro(color * PRECIO_COLOR)
+            
             coste_sin_iva = coste_bn_sin_iva + coste_color_sin_iva
             
-            iva_bn = coste_bn_sin_iva * IVA
-            iva_color = coste_color_sin_iva * IVA
-            iva_total = iva_bn + iva_color
+            iva_total = redondear_euro(coste_sin_iva * IVA)
+            iva_bn = redondear_euro(coste_bn_sin_iva * IVA)
+            iva_color = redondear_euro(coste_color_sin_iva * IVA)
+            
+            coste_con_iva = redondear_euro(coste_sin_iva + iva_total)
             
             coste_bn_con_iva = coste_bn_sin_iva + iva_bn
             coste_color_con_iva = coste_color_sin_iva + iva_color
-            coste_con_iva = coste_sin_iva + iva_total
 
-            # Añadir al resultado con un aviso visible
             resultados.append({
                 "sn": sn_pdf,
                 "organismo": "⚠️ NO EN EXCEL (Solo Factura)",
@@ -389,6 +407,10 @@ def guardar_registro(nombre, pdf_file, excel_file, df):
     
     nuevo_id = int(datetime.now().timestamp() * 1000)
     
+    # Calcular totales sumando los valores ya redondeados (evita errores de float)
+    total_sin_iva = redondear_euro(df['coste_sin_iva'].sum())
+    total_con_iva = redondear_euro(df['coste_con_iva'].sum())
+    
     registro = {
         'id': nuevo_id,
         'nombre': nombre,
@@ -399,8 +421,8 @@ def guardar_registro(nombre, pdf_file, excel_file, df):
         'excel_bytes': excel_bytes,
         'df': df.copy(),
         'dispositivos': len(df),
-        'coste_total_sin_iva': df['coste_sin_iva'].sum(),
-        'coste_total_con_iva': df['coste_con_iva'].sum()
+        'coste_total_sin_iva': total_sin_iva,
+        'coste_total_con_iva': total_con_iva
     }
     st.session_state.historial_documentos.append(registro)
     guardar_historial(st.session_state.historial_documentos)
@@ -441,10 +463,11 @@ def obtener_dataframe_acumulado(ids_seleccionados=None):
     
     dfs = []
     for registro in registros:
-        # CORRECCIÓN: Comprobamos que el DataFrame exista antes de usarlo
-        if 'df' not in registro or registro['df'] is None:
+        # CORRECCIÓN DE ERROR: Verificar que 'df' existe y es un DataFrame válido
+        if 'df' not in registro or registro['df'] is None or not isinstance(registro['df'], pd.DataFrame):
             continue
             
+        # Al ser un DataFrame válido, podemos usar .copy()
         df_temp = registro['df'].copy()
         df_temp['documento'] = registro['nombre']
         df_temp['fecha'] = registro['fecha_hora']
@@ -459,8 +482,9 @@ def obtener_dataframe_acumulado(ids_seleccionados=None):
 def mostrar_analisis(df, titulo="Análisis", mostrar_por_documento=False):
     """Muestra todas las gráficas y tablas del análisis"""
     
+    # Protección contra dataframes vacíos o nulos
     if df is None or df.empty:
-        st.warning("No hay datos para mostrar.")
+        st.warning("No hay datos disponibles para mostrar.")
         return
 
     st.subheader(titulo)
@@ -474,15 +498,13 @@ def mostrar_analisis(df, titulo="Análisis", mostrar_por_documento=False):
     else:
         col1.metric("🖥️ Dispositivos", len(df))
     
-    # Calcular dispositivos faltantes (los que añadimos nosotros)
-    # Usamos try/except por si la columna estado no existe en versiones antiguas de los datos
     try:
         sin_ubicar = len(df[df['estado'] == "⚠️ Faltante en Excel"])
     except:
         sin_ubicar = 0
-
+        
     revisados = len(df) - sin_ubicar
-
+    
     col2.metric("✅ Revisados", revisados)
     col3.metric("❌ Sin ubicar (Solo PDF)", sin_ubicar)
     col4.metric("🖨️ Total B/N", f"{df['bn'].sum():,}")
@@ -786,7 +808,7 @@ def mostrar_detalle_equipos(df):
     }
     
     def highlight_missing(row):
-        # Protección extra por si falta la columna 'Estado'
+        # Protección para cuando no existe la columna Estado
         if 'Estado' in row and row['Estado'] == '⚠️ Faltante en Excel':
             return ['background-color: #ffcccc'] * len(row)
         return [''] * len(row)
@@ -839,7 +861,7 @@ if st.session_state.historial_documentos and st.session_state.modo_vista != 'nue
     with st.expander("📚 Gestión de Documentos Guardados", expanded=False):
         for registro in st.session_state.historial_documentos:
             # Si el registro no tiene datos, no lo mostramos para evitar errores
-            if 'df' not in registro:
+            if 'df' not in registro or not isinstance(registro['df'], pd.DataFrame):
                 continue
 
             col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 1, 1])
@@ -910,7 +932,7 @@ elif st.session_state.modo_vista == 'individual':
     
     if st.session_state.historial_documentos:
         # Filtramos para mostrar solo registros válidos
-        registros_validos = [r for r in st.session_state.historial_documentos if 'df' in r]
+        registros_validos = [r for r in st.session_state.historial_documentos if 'df' in r and isinstance(r['df'], pd.DataFrame)]
         
         if registros_validos:
             nombres_docs = [f"{reg['nombre']} ({reg['fecha_hora']})" for reg in registros_validos]
@@ -933,7 +955,7 @@ elif st.session_state.modo_vista == 'acumulado':
     st.subheader("📊 Vista Acumulada - Todos los Documentos")
     
     # Filtrar solo válidos
-    registros_validos = [r for r in st.session_state.historial_documentos if 'df' in r]
+    registros_validos = [r for r in st.session_state.historial_documentos if 'df' in r and isinstance(r['df'], pd.DataFrame)]
     
     st.info(f"📁 Mostrando datos acumulados de {len(registros_validos)} documento(s)")
     
@@ -966,7 +988,7 @@ elif st.session_state.modo_vista == 'comparativa':
     
     st.markdown("**Selecciona los documentos que deseas comparar:**")
     
-    registros_validos = [r for r in st.session_state.historial_documentos if 'df' in r]
+    registros_validos = [r for r in st.session_state.historial_documentos if 'df' in r and isinstance(r['df'], pd.DataFrame)]
 
     if len(registros_validos) < 2:
         st.warning("Necesitas al menos 2 documentos válidos para comparar.")
