@@ -14,24 +14,26 @@ import os
 import hashlib
 from pathlib import Path
 
+# --- CONSTANTES ---
 PRECIO_BN = 0.0098
 PRECIO_COLOR = 0.119
 IVA = 0.21
 
-# Directorio para almacenamiento persistente
+# --- DIRECTORIOS ---
 DATA_DIR = Path("factubam_data")
 DATA_DIR.mkdir(exist_ok=True)
 HISTORIAL_FILE = DATA_DIR / "historial.json"
 DOCUMENTOS_DIR = DATA_DIR / "documentos"
 DOCUMENTOS_DIR.mkdir(exist_ok=True)
 
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="FactuBAM",
     page_icon="Imagenes/ada-logo.png",
     layout="wide"
 )
 
-# Bloque try-except para la imagen por si no existe
+# Intentar cargar imagen, si falla no rompe la app
 try:
     st.image(
         "Imagenes/cabecera_andalucia.jpg",
@@ -43,7 +45,7 @@ except:
 st.markdown("<br><br>", unsafe_allow_html=True)
 
 # ======================================================
-# ESTILOS CORPORATIVOS (COLORES Y TIPOGRAFÍAS)
+# ESTILOS CORPORATIVOS
 # ======================================================
 st.markdown("""
 <style>
@@ -55,23 +57,19 @@ st.markdown("""
     --gris-claro: #D9D9D9;
 }
 
-/* Tipografía corporativa (si está disponible en Tipografias/) */
 @font-face {
     font-family: 'JuntaSans';
     src: url('Tipografias/JuntaSans-Regular.ttf') format('truetype');
 }
 
-/* Aplicación global */
 html, body, [class*="css"] {
     font-family: 'JuntaSans', Arial, sans-serif;
 }
 
-/* Títulos */
 h1, h2, h3 {
     color: var(--verde-principal);
 }
 
-/* Botones */
 .stButton > button {
     background-color: var(--verde-principal);
     color: white;
@@ -83,12 +81,10 @@ h1, h2, h3 {
     background-color: var(--verde-secundario);
 }
 
-/* Métricas */
 [data-testid="stMetricValue"] {
     color: var(--verde-principal);
 }
 
-/* Expander */
 details summary {
     background-color: var(--gris-claro);
     color: var(--negro-corporativo);
@@ -98,7 +94,9 @@ details summary {
 </style>
 """, unsafe_allow_html=True)
 
-# --- FUNCIÓN DE REDONDEO EXACTO (TIPO EXCEL) ---
+# ======================================================
+# FUNCIÓN DE REDONDEO EXACTO (TIPO EXCEL/CONTABILIDAD)
+# ======================================================
 def redondear_euro(valor):
     """
     Redondea un valor a 2 decimales usando redondeo aritmético (0.5 sube).
@@ -106,11 +104,14 @@ def redondear_euro(valor):
     """
     if valor is None:
         return 0.0
+    # Se suma 0.5 para asegurar redondeo aritmético correcto en positivos
     return int(valor * 100 + 0.5) / 100.0
 
-# Funciones de almacenamiento persistente en disco
+# ======================================================
+# FUNCIONES DE ALMACENAMIENTO Y GESTIÓN
+# ======================================================
 def cargar_historial():
-    """Carga el historial desde archivo JSON local"""
+    """Carga el historial desde archivo JSON local de forma segura"""
     try:
         if not HISTORIAL_FILE.exists():
             return []
@@ -124,14 +125,14 @@ def cargar_historial():
                 # Cargar DataFrame
                 df_file = DOCUMENTOS_DIR / f"{reg_data['id']}_data.json"
                 
-                # CORRECCIÓN: Verificación robusta de existencia
+                # CORRECCIÓN: Verificar que el archivo existe antes de leer
                 if df_file.exists():
                     with open(df_file, 'r', encoding='utf-8') as f:
                         df_data = json.load(f)
                         reg_data['df'] = pd.DataFrame(df_data)
                 else:
-                    # Si no hay datos, saltamos este registro
-                    continue
+                    # Si no hay datos, saltamos este registro corrupto
+                    continue 
                 
                 # Cargar archivos PDF y Excel
                 pdf_file = DOCUMENTOS_DIR / f"{reg_data['id']}_factura.pdf"
@@ -148,9 +149,9 @@ def cargar_historial():
                 # Solo añadimos si el DataFrame es válido
                 if 'df' in reg_data and isinstance(reg_data['df'], pd.DataFrame):
                     historial.append(reg_data)
-                    
+
             except Exception as e:
-                st.warning(f"Error cargando registro {reg_data.get('id', 'desconocido')}: {str(e)}")
+                st.warning(f"Error al cargar registro {reg_data.get('id', 'desconocido')}: {str(e)}")
                 continue
         
         return historial
@@ -161,11 +162,10 @@ def cargar_historial():
 def guardar_historial(historial):
     """Guarda el historial en archivo JSON local"""
     try:
-        # Preparar datos para JSON (sin DataFrame ni bytes)
         historial_simple = []
         
         for registro in historial:
-            # Protección: si no hay df válido, no guardar metadatos huérfanos
+            # Protección: si no hay df válido, no guardar
             if 'df' not in registro or not isinstance(registro['df'], pd.DataFrame):
                 continue
 
@@ -176,8 +176,9 @@ def guardar_historial(historial):
                 'pdf_name': registro['pdf_name'],
                 'excel_name': registro['excel_name'],
                 'dispositivos': registro['dispositivos'],
-                'coste_total_sin_iva': registro['coste_total_sin_iva'],
-                'coste_total_con_iva': registro['coste_total_con_iva']
+                # Guardamos los totales recalculados desde el DF para asegurar consistencia
+                'coste_total_sin_iva': registro['df']['coste_sin_iva'].sum(),
+                'coste_total_con_iva': registro['df']['coste_con_iva'].sum()
             }
             historial_simple.append(reg_simple)
             
@@ -209,7 +210,6 @@ def guardar_historial(historial):
 def eliminar_registro_disco(registro_id):
     """Elimina los archivos de un registro del disco"""
     try:
-        # Eliminar archivos del registro
         archivos = [
             DOCUMENTOS_DIR / f"{registro_id}_data.json",
             DOCUMENTOS_DIR / f"{registro_id}_factura.pdf",
@@ -228,11 +228,9 @@ def eliminar_registro_disco(registro_id):
 def limpiar_historial_disco():
     """Limpia todo el historial del disco"""
     try:
-        # Eliminar todos los archivos en el directorio de documentos
         for archivo in DOCUMENTOS_DIR.glob("*"):
             archivo.unlink()
         
-        # Eliminar archivo de historial
         if HISTORIAL_FILE.exists():
             HISTORIAL_FILE.unlink()
         
@@ -243,7 +241,6 @@ def limpiar_historial_disco():
 
 # Inicializar session_state
 if 'historial_documentos' not in st.session_state:
-    # Cargar desde disco
     st.session_state.historial_documentos = cargar_historial()
 
 if 'registro_seleccionado' not in st.session_state:
@@ -254,6 +251,10 @@ if 'modo_vista' not in st.session_state:
     st.session_state.modo_vista = 'nuevo'
 if 'documentos_seleccionados' not in st.session_state:
     st.session_state.documentos_seleccionados = []
+
+# ======================================================
+# LÓGICA DE NEGOCIO (PDF, EXCEL Y CÁLCULOS)
+# ======================================================
 
 def extraer_datos_pdf(pdf_bytes):
     datos = defaultdict(lambda: {"bn": 0, "color": 0})
@@ -269,132 +270,137 @@ def extraer_datos_pdf(pdf_bytes):
                         continue
                     desc = str(fila[1]).upper()
                     cantidad = fila[2]
+                    
                     match_sn = re.search(r'([A-Z0-9]{8,})\s+N/S', desc)
                     if match_sn:
                         sn_actual = match_sn.group(1)
                         continue
+                    
                     if sn_actual is None:
                         continue
+                        
                     if "TOTAL MONOCROMO" in desc:
                         try:
-                            datos[sn_actual]["bn"] = int(float(str(cantidad).replace('.', '').replace(',', '.')))
+                            val = float(str(cantidad).replace('.', '').replace(',', '.'))
+                            datos[sn_actual]["bn"] = int(val)
                         except:
                             datos[sn_actual]["bn"] = 0
+                            
                     if "TOTAL COLOR" in desc:
                         try:
-                            datos[sn_actual]["color"] = int(float(str(cantidad).replace('.', '').replace(',', '.')))
+                            val = float(str(cantidad).replace('.', '').replace(',', '.'))
+                            datos[sn_actual]["color"] = int(val)
                         except:
                             datos[sn_actual]["color"] = 0
     return datos
+
+def calcular_linea_redondeada(bn, color):
+    """Realiza los cálculos de una línea aplicando redondeo estricto"""
+    # 1. Coste unitario redondeado a 2 decimales
+    coste_bn_sin_iva = redondear_euro(bn * PRECIO_BN)
+    coste_color_sin_iva = redondear_euro(color * PRECIO_COLOR)
+    
+    # 2. Base imponible total de la línea (suma de redondeados)
+    coste_sin_iva = redondear_euro(coste_bn_sin_iva + coste_color_sin_iva)
+    
+    # 3. IVA calculado sobre la base redondeada
+    iva_total = redondear_euro(coste_sin_iva * IVA)
+    
+    # 4. Total factura (Base + IVA)
+    coste_con_iva = redondear_euro(coste_sin_iva + iva_total)
+    
+    # Desglose de IVA (informativo)
+    iva_bn = redondear_euro(coste_bn_sin_iva * IVA)
+    iva_color = redondear_euro(coste_color_sin_iva * IVA)
+    
+    # Totales desglosados
+    coste_bn_con_iva = redondear_euro(coste_bn_sin_iva + iva_bn)
+    coste_color_con_iva = redondear_euro(coste_color_sin_iva + iva_color)
+    
+    return {
+        "coste_bn_sin_iva": coste_bn_sin_iva,
+        "coste_color_sin_iva": coste_color_sin_iva,
+        "coste_sin_iva": coste_sin_iva,
+        "iva_bn": iva_bn,
+        "iva_color": iva_color,
+        "iva_total": iva_total,
+        "coste_bn_con_iva": coste_bn_con_iva,
+        "coste_color_con_iva": coste_color_con_iva,
+        "coste_con_iva": coste_con_iva
+    }
 
 def cruzar_excel(xlsx_file, datos_pdf):
     wb = openpyxl.load_workbook(xlsx_file)
     resultados = []
     
-    # Conjunto para rastrear SNs encontrados en el Excel
+    # IMPORTANTE: Set para rastrear qué números de serie del PDF están en el Excel
     sns_encontrados_en_excel = set()
 
     for sheet_name in wb.sheetnames:
         sheet = wb[sheet_name]
+        
+        if sheet.max_row < 2:
+            continue
+            
         header = [c.value for c in sheet[1]]
         if "S/N" not in header:
             continue
+            
         idx_sn = header.index("S/N") + 1
         idx_org = header.index("Organismo") + 1
         idx_ubi = header.index("Ubicación exacta") + 1
+        
         for row in range(2, sheet.max_row + 1):
-            sn = sheet.cell(row, idx_sn).value
+            sn_val = sheet.cell(row, idx_sn).value
             
-            if sn:
-                sn = str(sn).strip()
+            if sn_val:
+                sn = str(sn_val).strip()
             else:
                 continue
 
             if sn in datos_pdf:
+                # Marcamos este SN como encontrado
                 sns_encontrados_en_excel.add(sn)
 
                 bn = datos_pdf[sn]["bn"]
                 color = datos_pdf[sn]["color"]
                 
-                # --- CÁLCULOS CON REDONDEO ---
-                # 1. Calcular coste bruto por tipo
-                # 2. Redondear a 2 decimales (como en factura línea a línea)
-                coste_bn_sin_iva = redondear_euro(bn * PRECIO_BN)
-                coste_color_sin_iva = redondear_euro(color * PRECIO_COLOR)
+                # CÁLCULOS CON REDONDEO ESTRICTO
+                calculos = calcular_linea_redondeada(bn, color)
                 
-                # 3. Sumar bases (ya redondeadas)
-                coste_sin_iva = coste_bn_sin_iva + coste_color_sin_iva
-                
-                # 4. Calcular IVA sobre la base total
-                iva_total = redondear_euro(coste_sin_iva * IVA)
-                
-                # Para mostrar desglose de IVA (informativo, pero el total manda)
-                iva_bn = redondear_euro(coste_bn_sin_iva * IVA)
-                iva_color = redondear_euro(coste_color_sin_iva * IVA)
-                
-                # 5. Calcular total final
-                coste_con_iva = redondear_euro(coste_sin_iva + iva_total)
-                
-                # Campos auxiliares
-                coste_bn_con_iva = coste_bn_sin_iva + iva_bn
-                coste_color_con_iva = coste_color_sin_iva + iva_color
-                
-                resultados.append({
+                registro = {
                     "sn": sn,
                     "organismo": sheet.cell(row, idx_org).value,
                     "ubicacion": sheet.cell(row, idx_ubi).value,
                     "bn": bn,
                     "color": color,
-                    "coste_bn_sin_iva": coste_bn_sin_iva,
-                    "coste_color_sin_iva": coste_color_sin_iva,
-                    "coste_sin_iva": coste_sin_iva,
-                    "iva_bn": iva_bn,
-                    "iva_color": iva_color,
-                    "iva_total": iva_total,
-                    "coste_bn_con_iva": coste_bn_con_iva,
-                    "coste_color_con_iva": coste_color_con_iva,
-                    "coste_con_iva": coste_con_iva,
                     "estado": "Revisado"
-                })
+                }
+                registro.update(calculos)
+                resultados.append(registro)
     
-    # === RECUPERACIÓN DE DISPOSITIVOS NO ENCONTRADOS EN EXCEL ===
+    # === CORRECCIÓN DEL DESCUADRE (LOS 200€) ===
+    # Buscar qué S/N existen en el PDF pero NO se encontraron en el Excel
     for sn_pdf, valores in datos_pdf.items():
         if sn_pdf not in sns_encontrados_en_excel:
+            # Esta es una máquina que se ha facturado pero no está en el inventario Excel
             bn = valores["bn"]
             color = valores["color"]
             
-            # --- MISMOS CÁLCULOS CON REDONDEO ---
-            coste_bn_sin_iva = redondear_euro(bn * PRECIO_BN)
-            coste_color_sin_iva = redondear_euro(color * PRECIO_COLOR)
-            
-            coste_sin_iva = coste_bn_sin_iva + coste_color_sin_iva
-            
-            iva_total = redondear_euro(coste_sin_iva * IVA)
-            iva_bn = redondear_euro(coste_bn_sin_iva * IVA)
-            iva_color = redondear_euro(coste_color_sin_iva * IVA)
-            
-            coste_con_iva = redondear_euro(coste_sin_iva + iva_total)
-            
-            coste_bn_con_iva = coste_bn_sin_iva + iva_bn
-            coste_color_con_iva = coste_color_sin_iva + iva_color
+            # Calculamos sus costes
+            calculos = calcular_linea_redondeada(bn, color)
 
-            resultados.append({
+            # Añadir al resultado con aviso visible
+            registro = {
                 "sn": sn_pdf,
                 "organismo": "⚠️ NO EN EXCEL (Solo Factura)",
                 "ubicacion": "Desconocida",
                 "bn": bn,
                 "color": color,
-                "coste_bn_sin_iva": coste_bn_sin_iva,
-                "coste_color_sin_iva": coste_color_sin_iva,
-                "coste_sin_iva": coste_sin_iva,
-                "iva_bn": iva_bn,
-                "iva_color": iva_color,
-                "iva_total": iva_total,
-                "coste_bn_con_iva": coste_bn_con_iva,
-                "coste_color_con_iva": coste_color_con_iva,
-                "coste_con_iva": coste_con_iva,
                 "estado": "⚠️ Faltante en Excel"
-            })
+            }
+            registro.update(calculos)
+            resultados.append(registro)
 
     return resultados
 
@@ -407,7 +413,7 @@ def guardar_registro(nombre, pdf_file, excel_file, df):
     
     nuevo_id = int(datetime.now().timestamp() * 1000)
     
-    # Calcular totales sumando los valores ya redondeados (evita errores de float)
+    # Recalcular totales sumando las columnas redondeadas
     total_sin_iva = redondear_euro(df['coste_sin_iva'].sum())
     total_con_iva = redondear_euro(df['coste_con_iva'].sum())
     
@@ -429,30 +435,19 @@ def guardar_registro(nombre, pdf_file, excel_file, df):
 
 def eliminar_registro(registro_id):
     """Elimina un registro del historial y del disco"""
-    # Eliminar del disco
     eliminar_registro_disco(registro_id)
-    
-    # Eliminar de la memoria
     st.session_state.historial_documentos = [
         r for r in st.session_state.historial_documentos if r['id'] != registro_id
     ]
-    
-    # Guardar historial actualizado
     guardar_historial(st.session_state.historial_documentos)
 
 def limpiar_historial():
     """Limpia todo el historial del disco y memoria"""
-    # Limpiar disco
     limpiar_historial_disco()
-    
-    # Limpiar memoria
     st.session_state.historial_documentos = []
 
 def obtener_dataframe_acumulado(ids_seleccionados=None):
-    """
-    Combina los dataframes de múltiples registros
-    Si ids_seleccionados es None, usa todos los registros
-    """
+    """Combina los dataframes de múltiples registros de forma segura"""
     if ids_seleccionados is None:
         registros = st.session_state.historial_documentos
     else:
@@ -463,11 +458,10 @@ def obtener_dataframe_acumulado(ids_seleccionados=None):
     
     dfs = []
     for registro in registros:
-        # CORRECCIÓN DE ERROR: Verificar que 'df' existe y es un DataFrame válido
+        # CORRECCIÓN DE ERROR: Verificación de seguridad
         if 'df' not in registro or registro['df'] is None or not isinstance(registro['df'], pd.DataFrame):
             continue
             
-        # Al ser un DataFrame válido, podemos usar .copy()
         df_temp = registro['df'].copy()
         df_temp['documento'] = registro['nombre']
         df_temp['fecha'] = registro['fecha_hora']
@@ -479,12 +473,15 @@ def obtener_dataframe_acumulado(ids_seleccionados=None):
     df_acumulado = pd.concat(dfs, ignore_index=True)
     return df_acumulado
 
+# ======================================================
+# FUNCIONES DE VISUALIZACIÓN (RESTAURADAS COMPLETAS)
+# ======================================================
+
 def mostrar_analisis(df, titulo="Análisis", mostrar_por_documento=False):
     """Muestra todas las gráficas y tablas del análisis"""
     
-    # Protección contra dataframes vacíos o nulos
     if df is None or df.empty:
-        st.warning("No hay datos disponibles para mostrar.")
+        st.warning("No hay datos para mostrar.")
         return
 
     st.subheader(titulo)
@@ -498,11 +495,15 @@ def mostrar_analisis(df, titulo="Análisis", mostrar_por_documento=False):
     else:
         col1.metric("🖥️ Dispositivos", len(df))
     
+    # Calcular dispositivos faltantes con seguridad
     try:
-        sin_ubicar = len(df[df['estado'] == "⚠️ Faltante en Excel"])
+        if 'estado' in df.columns:
+            sin_ubicar = len(df[df['estado'] == "⚠️ Faltante en Excel"])
+        else:
+            sin_ubicar = 0
     except:
         sin_ubicar = 0
-        
+
     revisados = len(df) - sin_ubicar
     
     col2.metric("✅ Revisados", revisados)
@@ -622,7 +623,7 @@ def mostrar_analisis_por_documento(df):
             'color': 'Color',
             'total_impresiones': 'Total Impresiones',
             'coste_sin_iva': 'Coste sin IVA',
-                        'coste_con_iva': 'Coste con IVA'
+            'coste_con_iva': 'Coste con IVA'
         }),
         use_container_width=True
     )
@@ -750,7 +751,7 @@ def mostrar_analisis_por_departamento(df):
                 'bn': 'B/N',
                 'color': 'Color',
                 'coste_sin_iva': 'Coste sin IVA',
-                                'coste_con_iva': 'Coste con IVA',
+                'coste_con_iva': 'Coste con IVA',
                 'dispositivos': 'Dispositivos',
                 'total_impresiones': 'Total Impresiones',
                 'promedio_por_dispositivo': 'Promedio/Dispositivo'
@@ -803,12 +804,12 @@ def mostrar_detalle_equipos(df):
         'bn': 'B/N',
         'color': 'Color',
         'coste_sin_iva': 'Coste sin IVA',
-                'coste_con_iva': 'Coste con IVA',
+        'coste_con_iva': 'Coste con IVA',
         'estado': 'Estado'
     }
     
     def highlight_missing(row):
-        # Protección para cuando no existe la columna Estado
+        # Protección si falta la columna estado
         if 'Estado' in row and row['Estado'] == '⚠️ Faltante en Excel':
             return ['background-color: #ffcccc'] * len(row)
         return [''] * len(row)
@@ -818,7 +819,10 @@ def mostrar_detalle_equipos(df):
         use_container_width=True
     )
 
-######## UI STREAMLIT ########
+# ======================================================
+# INTERFAZ PRINCIPAL (UI)
+# ======================================================
+
 st.title("📑 FactuBAM — Revisión de Facturas")
 
 # Mostrar información de almacenamiento
