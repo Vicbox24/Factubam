@@ -30,10 +30,13 @@ st.set_page_config(
     page_icon="Imagenes/ada-logo.png",
     layout="wide"
 )
-st.image(
-    "Imagenes/cabecera_andalucia.jpg",
-    use_container_width=True
-)
+try:
+    st.image(
+        "Imagenes/cabecera_andalucia.jpg",
+        use_container_width=True
+    )
+except:
+    pass # Evitar error si no existe la imagen
 
 st.markdown("<br><br>", unsafe_allow_html=True)
 
@@ -263,6 +266,11 @@ def extraer_datos_pdf(pdf_bytes):
 def cruzar_excel(xlsx_file, datos_pdf):
     wb = openpyxl.load_workbook(xlsx_file)
     resultados = []
+    
+    # IMPORTANTE: Creamos un conjunto para rastrear qué números de serie del PDF 
+    # encontramos en el Excel. Así sabremos cuáles faltan.
+    sns_encontrados_en_excel = set()
+
     for sheet_name in wb.sheetnames:
         sheet = wb[sheet_name]
         header = [c.value for c in sheet[1]]
@@ -273,7 +281,15 @@ def cruzar_excel(xlsx_file, datos_pdf):
         idx_ubi = header.index("Ubicación exacta") + 1
         for row in range(2, sheet.max_row + 1):
             sn = sheet.cell(row, idx_sn).value
+            
+            # Limpieza básica del SN del Excel para asegurar coincidencia
+            if sn:
+                sn = str(sn).strip()
+
             if sn in datos_pdf:
+                # Marcamos este SN como encontrado
+                sns_encontrados_en_excel.add(sn)
+
                 bn = datos_pdf[sn]["bn"]
                 color = datos_pdf[sn]["color"]
                 
@@ -306,6 +322,47 @@ def cruzar_excel(xlsx_file, datos_pdf):
                     "coste_con_iva": coste_con_iva,
                     "estado": "Revisado"
                 })
+    
+    # === CORRECCIÓN DEL DESCUADRE ===
+    # Buscar qué S/N existen en el PDF pero NO se encontraron en el Excel
+    # Estos son los que provocan la diferencia de precio.
+    for sn_pdf, valores in datos_pdf.items():
+        if sn_pdf not in sns_encontrados_en_excel:
+            # Calcular costes de la máquina "huérfana"
+            bn = valores["bn"]
+            color = valores["color"]
+            
+            coste_bn_sin_iva = bn * PRECIO_BN
+            coste_color_sin_iva = color * PRECIO_COLOR
+            coste_sin_iva = coste_bn_sin_iva + coste_color_sin_iva
+            
+            iva_bn = coste_bn_sin_iva * IVA
+            iva_color = coste_color_sin_iva * IVA
+            iva_total = iva_bn + iva_color
+            
+            coste_bn_con_iva = coste_bn_sin_iva + iva_bn
+            coste_color_con_iva = coste_color_sin_iva + iva_color
+            coste_con_iva = coste_sin_iva + iva_total
+
+            # Añadir al resultado con un aviso visible
+            resultados.append({
+                "sn": sn_pdf,
+                "organismo": "⚠️ NO EN EXCEL (Solo Factura)",
+                "ubicacion": "Desconocida",
+                "bn": bn,
+                "color": color,
+                "coste_bn_sin_iva": coste_bn_sin_iva,
+                "coste_color_sin_iva": coste_color_sin_iva,
+                "coste_sin_iva": coste_sin_iva,
+                "iva_bn": iva_bn,
+                "iva_color": iva_color,
+                "iva_total": iva_total,
+                "coste_bn_con_iva": coste_bn_con_iva,
+                "coste_color_con_iva": coste_color_con_iva,
+                "coste_con_iva": coste_con_iva,
+                "estado": "⚠️ Faltante en Excel"
+            })
+
     return resultados
 
 def guardar_registro(nombre, pdf_file, excel_file, df):
@@ -391,8 +448,12 @@ def mostrar_analisis(df, titulo="Análisis", mostrar_por_documento=False):
     else:
         col1.metric("🖥️ Dispositivos", len(df))
     
-    col2.metric("✅ Revisados", len(df))
-    col3.metric("❌ Sin ubicar", 0)
+    # Calcular dispositivos faltantes (los que añadimos nosotros)
+    sin_ubicar = len(df[df['estado'] == "⚠️ Faltante en Excel"])
+    revisados = len(df) - sin_ubicar
+
+    col2.metric("✅ Revisados", revisados)
+    col3.metric("❌ Sin ubicar (Solo PDF)", sin_ubicar) # Actualizado para mostrar el error
     col4.metric("🖨️ Total B/N", f"{df['bn'].sum():,}")
     col5.metric("🎨 Total Color", f"{df['color'].sum():,}")
     
@@ -693,8 +754,11 @@ def mostrar_detalle_equipos(df):
         'estado': 'Estado'
     }
     
+    def highlight_missing(row):
+        return ['background-color: #ffcccc' if row['Estado'] == '⚠️ Faltante en Excel' else '' for _ in row]
+
     st.dataframe(
-        df_display[columnas_mostrar].rename(columns=columnas_renombrar),
+        df_display[columnas_mostrar].rename(columns=columnas_renombrar).style.apply(highlight_missing, axis=1),
         use_container_width=True
     )
 
@@ -836,8 +900,8 @@ elif st.session_state.modo_vista == 'acumulado':
             ids_seleccionados = []
             for registro in st.session_state.historial_documentos:
                 if st.checkbox(f"{registro['nombre']} ({registro['fecha_hora']})", 
-                              value=False, 
-                              key=f"check_acum_{registro['id']}"):
+                               value=False, 
+                               key=f"check_acum_{registro['id']}"):
                     ids_seleccionados.append(registro['id'])
     
     if ids_seleccionados:
@@ -1028,7 +1092,3 @@ def detectar_duplicados_md5():
 
     duplicados = {md5: files for md5, files in hashes.items() if len(files) > 1}
     return duplicados
-
-# Para uso manual (consola):
-# duplicados = detectar_duplicados_md5()
-# print(duplicados)
