@@ -25,6 +25,7 @@ DATA_DIR.mkdir(exist_ok=True)
 HISTORIAL_FILE = DATA_DIR / "historial.json"
 DOCUMENTOS_DIR = DATA_DIR / "documentos"
 DOCUMENTOS_DIR.mkdir(exist_ok=True)
+BASE_EXCEL_FILE = DATA_DIR / "base_inventario.xlsx"  # NUEVO: Ruta para el Excel base
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -234,6 +235,11 @@ def limpiar_historial_disco():
         if HISTORIAL_FILE.exists():
             HISTORIAL_FILE.unlink()
         
+        # Opcional: Si quisieras también borrar el Excel base al limpiar todo el historial, 
+        # puedes descomentar las dos siguientes líneas, pero por defecto lo dejamos para que sea persistente:
+        # if BASE_EXCEL_FILE.exists():
+        #     BASE_EXCEL_FILE.unlink()
+            
         return True
     except Exception as e:
         st.error(f"Error al limpiar historial: {str(e)}")
@@ -910,19 +916,44 @@ if st.session_state.modo_vista == 'nuevo':
     st.subheader("➕ Cargar Nuevo Documento")
     
     pdf_file = st.file_uploader("Sube la factura PDF", type=["pdf"])
-    excel_file = st.file_uploader("Sube el inventario Excel", type=["xlsx"])
+    
+    # --- MODIFICACIÓN EXCEL BASE ---
+    tiene_base = BASE_EXCEL_FILE.exists()
+    
+    if tiene_base:
+        st.info("ℹ️ Ya hay un inventario Excel guardado como base. Sube uno nuevo solo si quieres actualizarlo.")
+        excel_file = st.file_uploader("Sube el inventario Excel (Opcional - Sustituirá al actual)", type=["xlsx"])
+    else:
+        excel_file = st.file_uploader("Sube el inventario Excel (Requerido)", type=["xlsx"])
 
-    if pdf_file and excel_file:
+    # Verificamos que tengamos PDF y (o bien Excel subido, o bien Excel base)
+    if pdf_file and (excel_file or tiene_base):
         nombre_registro = st.text_input("📝 Nombre para este análisis:", placeholder="Ej: Factura Enero 2024")
         
         if st.button("Procesar y Guardar", type="primary"):
             if nombre_registro:
                 with st.spinner("Procesando documentos..."):
+                    
+                    # --- GESTIÓN DEL ARCHIVO EXCEL A USAR ---
+                    if excel_file:
+                        # Si han subido uno nuevo, lo guardamos como el base
+                        with open(BASE_EXCEL_FILE, "wb") as f:
+                            f.write(excel_file.getvalue())
+                        excel_procesar = excel_file
+                    else:
+                        # Si no han subido uno nuevo, leemos el base guardado y lo metemos en un BytesIO 
+                        # para que se comporte exactamente como un archivo subido de Streamlit
+                        with open(BASE_EXCEL_FILE, "rb") as f:
+                            bytes_excel = f.read()
+                        excel_procesar = io.BytesIO(bytes_excel)
+                        excel_procesar.name = "base_inventario.xlsx"
+                        
+                    # --- RESTO DE LA LÓGICA INTACTA ---
                     datos_pdf = extraer_datos_pdf(pdf_file)
-                    resultados = cruzar_excel(excel_file, datos_pdf)
+                    resultados = cruzar_excel(excel_procesar, datos_pdf)
                     df = pd.DataFrame(resultados)
                     
-                    guardar_registro(nombre_registro, pdf_file, excel_file, df)
+                    guardar_registro(nombre_registro, pdf_file, excel_procesar, df)
                     
                     st.success(f"✅ Análisis '{nombre_registro}' guardado correctamente")
                     st.session_state.modo_vista = 'individual'
